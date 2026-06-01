@@ -198,45 +198,6 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .diagram {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(110px, 1fr));
-      gap: 10px;
-      padding: 16px;
-      align-items: center;
-    }
-
-    .node {
-      min-height: 86px;
-      display: grid;
-      place-items: center;
-      text-align: center;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #20242b;
-      padding: 10px;
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    .arrow {
-      color: var(--muted);
-      text-align: center;
-      font-size: 22px;
-      font-weight: 900;
-    }
-
-    .warning {
-      margin-top: 14px;
-      border: 1px solid #69421e;
-      border-radius: 8px;
-      background: #22190f;
-      color: #ffe5bc;
-      padding: 12px;
-      font-size: 13px;
-      line-height: 1.45;
-    }
-
     @media (max-width: 980px) {
       main {
         grid-template-columns: 1fr;
@@ -314,10 +275,6 @@
         <input id="muSlider" type="range" min="0.001" max="0.12" step="0.001" value="0.035">
         <div class="row"><span>Mu</span><span id="muValue" class="value">0.035</span></div>
       </div>
-
-      <div class="warning">
-        <strong>Visual-only:</strong> live microphone mode draws the inverse waveform but does not play anti-noise, measure an error mic, or prove acoustic cancellation.
-      </div>
     </aside>
 
     <section class="content">
@@ -341,25 +298,6 @@
       </div>
 
       <div class="grid">
-        <div class="panel wide">
-          <div class="panel-header">
-            <div class="panel-title">ANC signal path</div>
-            <div id="diagramNote" class="panel-note">FxLMS uses the estimated secondary path during adaptation.</div>
-          </div>
-          <div class="diagram">
-            <div class="node">Reference mic<br><span class="panel-note">noise before target</span></div>
-            <div class="arrow">-></div>
-            <div class="node">Adaptive controller<br><span class="panel-note">FIR / FxLMS</span></div>
-            <div class="arrow">-></div>
-            <div class="node">Speaker + air path<br><span class="panel-note">secondary path</span></div>
-            <div class="node">Primary noise path</div>
-            <div class="arrow">-></div>
-            <div class="node">Error microphone<br><span class="panel-note">residual sound</span></div>
-            <div class="arrow">-></div>
-            <div class="node">Coefficient update<br><span class="panel-note">filtered reference</span></div>
-          </div>
-        </div>
-
         <div class="panel">
           <div class="panel-header">
             <div id="inputTitle" class="panel-title">Incoming noise waveform</div>
@@ -454,7 +392,6 @@
       error: document.getElementById("errorMetric"),
       reduction: document.getElementById("reductionMetric"),
       status: document.getElementById("statusMetric"),
-      diagram: document.getElementById("diagramNote"),
       micStatus: document.getElementById("micStatus"),
       inputTitle: document.getElementById("inputTitle"),
       inputNote: document.getElementById("inputNote"),
@@ -508,17 +445,7 @@
       labels.delay.textContent = `${controls.delay.value} samples`;
       labels.latency.textContent = `${controls.latency.value} ms`;
       labels.mu.textContent = Number(controls.mu.value).toFixed(3);
-      const mode = controls.mode.value;
-      if (mode === "fxlms") {
-        labels.diagram.textContent = "FxLMS learns controller coefficients using a filtered reference.";
-      } else if (mode === "bluetooth") {
-        labels.diagram.textContent = "Bluetooth latency moves anti-noise far too late to cancel the original sound.";
-      } else if (mode === "live") {
-        labels.diagram.textContent = "Live mic mode reads your microphone and creates an electrical inverse. It does not output the inverted noise waveforms.";
-      } else {
-        labels.diagram.textContent = "Inversion only helps when acoustic delay and phase line up at the target.";
-      }
-      updatePanelLabels(mode);
+      updatePanelLabels(controls.mode.value);
     }
 
     function updatePanelLabels(mode) {
@@ -571,7 +498,7 @@
       } catch (error) {
         labels.micStatus.textContent = "Blocked";
         labels.status.textContent = "Mic blocked";
-        labels.diagram.textContent = `Microphone access failed: ${error.message}`;
+        labels.error.textContent = "mic blocked";
       }
     }
 

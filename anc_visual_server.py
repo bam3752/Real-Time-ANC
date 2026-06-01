@@ -30,9 +30,23 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         return
 
 
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+
+
 def open_browser(url: str) -> None:
     time.sleep(0.4)
     webbrowser.open(url)
+
+
+def make_server(host: str, start_port: int, handler, tries: int = 20):
+    for port in range(start_port, start_port + tries):
+        try:
+            return port, ReusableTCPServer((host, port), handler)
+        except OSError as exc:
+            if exc.errno not in (48, 98):
+                raise
+    raise SystemExit(f"No free port found from {start_port} to {start_port + tries - 1}.")
 
 
 def main() -> int:
@@ -46,8 +60,11 @@ def main() -> int:
         raise SystemExit(f"Missing {HTML_FILE.name}; run this script from the project with the HTML file present.")
 
     handler = functools.partial(QuietHandler, directory=str(PROJECT_DIR))
-    with socketserver.TCPServer((args.host, args.port), handler) as server:
-        url = f"http://{args.host}:{args.port}/{HTML_FILE.name}"
+    port, server = make_server(args.host, args.port, handler)
+    with server:
+        url = f"http://{args.host}:{port}/{HTML_FILE.name}"
+        if port != args.port:
+            print(f"Port {args.port} is busy; using {port} instead.")
         print(f"Serving ANC visual dashboard at {url}")
         print("Press Ctrl+C to stop.")
         if not args.no_browser:
