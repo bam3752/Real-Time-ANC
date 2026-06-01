@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Active Noise Control Visual Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101113;
+      --panel: #181a1f;
+      --panel-2: #20242b;
+      --line: #343943;
+      --text: #f2f5f8;
+      --muted: #aab3bf;
+      --blue: #4aa3ff;
+      --orange: #ff9b45;
+      --green: #4fd18b;
+      --red: #ff5f62;
+      --yellow: #ffd166;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #15171b;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      min-height: calc(100vh - 74px);
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: #14161a;
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .content {
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .control-group {
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    select,
+    input[type="range"],
+    button {
+      width: 100%;
+    }
+
+    select,
+    button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      color: var(--text);
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    button:hover {
+      border-color: #55606f;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .value {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .wide {
+      grid-column: 1 / -1;
+    }
+
+    .panel {
+      min-height: 240px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #1b1e24;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .panel-note {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 220px;
+    }
+
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .metric .number {
+      margin-top: 8px;
+      font-size: 22px;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .diagram {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(110px, 1fr));
+      gap: 10px;
+      padding: 16px;
+      align-items: center;
+    }
+
+    .node {
+      min-height: 86px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #20242b;
+      padding: 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .arrow {
+      color: var(--muted);
+      text-align: center;
+      font-size: 22px;
+      font-weight: 900;
+    }
+
+    .warning {
+      margin-top: 14px;
+      border: 1px solid #69421e;
+      border-radius: 8px;
+      background: #22190f;
+      color: #ffe5bc;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      aside {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .grid,
+      .metric-strip {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Active Noise Control Visual Dashboard</h1>
+      <div class="subtitle">A browser companion for explaining phase, delay, secondary paths, and FxLMS convergence.</div>
+    </div>
+    <button id="resetButton" style="max-width: 150px;">Reset</button>
+  </header>
+
+  <main>
+    <aside>
+      <div class="control-group">
+        <label for="modeSelect">Visual mode</label>
+        <select id="modeSelect">
+          <option value="simple">Simple inversion</option>
+          <option value="delay">Delay compensated</option>
+          <option value="fxlms" selected>FxLMS simulation</option>
+          <option value="bluetooth">Bluetooth delay demo</option>
+          <option value="live">Live microphone inverse</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <button id="micButton">Start Microphone</button>
+        <div class="row" style="margin-top: 8px;"><span>Live input</span><span id="micStatus" class="value">Off</span></div>
+      </div>
+
+      <div class="control-group">
+        <label for="noiseSelect">Noise source</label>
+        <select id="noiseSelect">
+          <option value="fan" selected>Fan / HVAC</option>
+          <option value="engine">Engine rumble</option>
+          <option value="hum">Electrical hum</option>
+          <option value="speech">Speech-like burst</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label for="gainSlider">Anti-noise gain</label>
+        <input id="gainSlider" type="range" min="0" max="1" step="0.01" value="0.35">
+        <div class="row"><span>Gain</span><span id="gainValue" class="value">0.35</span></div>
+      </div>
+
+      <div class="control-group">
+        <label for="delaySlider">Manual delay</label>
+        <input id="delaySlider" type="range" min="0" max="220" step="1" value="24">
+        <div class="row"><span>Delay</span><span id="delayValue" class="value">24 samples</span></div>
+      </div>
+
+      <div class="control-group">
+        <label for="latencySlider">System latency</label>
+        <input id="latencySlider" type="range" min="1" max="5000" step="1" value="8">
+        <div class="row"><span>Latency</span><span id="latencyValue" class="value">8 ms</span></div>
+      </div>
+
+      <div class="control-group">
+        <label for="muSlider">FxLMS step size</label>
+        <input id="muSlider" type="range" min="0.001" max="0.12" step="0.001" value="0.035">
+        <div class="row"><span>Mu</span><span id="muValue" class="value">0.035</span></div>
+      </div>
+
+      <div class="warning">
+        <strong>Visual-only:</strong> live microphone mode draws the inverse waveform but does not play anti-noise, measure an error mic, or prove acoustic cancellation.
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="metric-strip">
+        <div class="metric">
+          <div class="label">Input level</div>
+          <div id="inputMetric" class="number">0.0 dB</div>
+        </div>
+        <div class="metric">
+          <div class="label">Residual level</div>
+          <div id="errorMetric" class="number">0.0 dB</div>
+        </div>
+        <div class="metric">
+          <div class="label">Reduction</div>
+          <div id="reductionMetric" class="number">0.0 dB</div>
+        </div>
+        <div class="metric">
+          <div class="label">Status</div>
+          <div id="statusMetric" class="number" style="font-size: 16px;">Learning</div>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="panel wide">
+          <div class="panel-header">
+            <div class="panel-title">ANC signal path</div>
+            <div id="diagramNote" class="panel-note">FxLMS uses the estimated secondary path during adaptation.</div>
+          </div>
+          <div class="diagram">
+            <div class="node">Reference mic<br><span class="panel-note">noise before target</span></div>
+            <div class="arrow">-></div>
+            <div class="node">Adaptive controller<br><span class="panel-note">FIR / FxLMS</span></div>
+            <div class="arrow">-></div>
+            <div class="node">Speaker + air path<br><span class="panel-note">secondary path</span></div>
+            <div class="node">Primary noise path</div>
+            <div class="arrow">-></div>
+            <div class="node">Error microphone<br><span class="panel-note">residual sound</span></div>
+            <div class="arrow">-></div>
+            <div class="node">Coefficient update<br><span class="panel-note">filtered reference</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div id="inputTitle" class="panel-title">Incoming noise waveform</div>
+            <div id="inputNote" class="panel-note">reference mic</div>
+          </div>
+          <canvas id="inputCanvas"></canvas>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div id="antiTitle" class="panel-title">Generated anti-noise waveform</div>
+            <div id="antiNote" class="panel-note">controller output</div>
+          </div>
+          <canvas id="antiCanvas"></canvas>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div id="errorTitle" class="panel-title">Residual error waveform</div>
+            <div id="errorNote" class="panel-note">target point</div>
+          </div>
+          <canvas id="errorCanvas"></canvas>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div id="spectrumTitle" class="panel-title">Low-frequency spectrum</div>
+            <div id="spectrumNote" class="panel-note">input vs residual</div>
+          </div>
+          <canvas id="spectrumCanvas"></canvas>
+        </div>
+
+        <div class="panel wide">
+          <div class="panel-header">
+            <div id="historyTitle" class="panel-title">FxLMS convergence history</div>
+            <div id="historyNote" class="panel-note">error RMS over time</div>
+          </div>
+          <canvas id="historyCanvas"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const sampleRate = 48000;
+    const blockSize = 256;
+    const plotSize = 2048;
+    const historySize = 260;
+    const filterLen = 96;
+    const secondaryPath = makeImpulse([10, 17, 31, 48], [0.75, -0.22, 0.13, -0.06], 72);
+    const primaryPath = makeImpulse([25, 32, 45], [0.9, 0.24, -0.1], 72);
+
+    const state = {
+      t: 0,
+      w: new Float32Array(filterLen),
+      xBuf: new Float32Array(filterLen),
+      fxBuf: new Float32Array(filterLen),
+      sBuf: new Float32Array(secondaryPath.length),
+      pBuf: new Float32Array(primaryPath.length),
+      yBuf: new Float32Array(secondaryPath.length),
+      input: new Float32Array(plotSize),
+      anti: new Float32Array(plotSize),
+      error: new Float32Array(plotSize),
+      write: 0,
+      history: new Float32Array(historySize),
+      historyWrite: 0
+    };
+
+    const live = {
+      context: null,
+      analyser: null,
+      source: null,
+      buffer: null,
+      ready: false
+    };
+
+    const controls = {
+      mode: document.getElementById("modeSelect"),
+      noise: document.getElementById("noiseSelect"),
+      gain: document.getElementById("gainSlider"),
+      delay: document.getElementById("delaySlider"),
+      latency: document.getElementById("latencySlider"),
+      mu: document.getElementById("muSlider")
+    };
+
+    const labels = {
+      gain: document.getElementById("gainValue"),
+      delay: document.getElementById("delayValue"),
+      latency: document.getElementById("latencyValue"),
+      mu: document.getElementById("muValue"),
+      input: document.getElementById("inputMetric"),
+      error: document.getElementById("errorMetric"),
+      reduction: document.getElementById("reductionMetric"),
+      status: document.getElementById("statusMetric"),
+      diagram: document.getElementById("diagramNote"),
+      micStatus: document.getElementById("micStatus"),
+      inputTitle: document.getElementById("inputTitle"),
+      inputNote: document.getElementById("inputNote"),
+      antiTitle: document.getElementById("antiTitle"),
+      antiNote: document.getElementById("antiNote"),
+      errorTitle: document.getElementById("errorTitle"),
+      errorNote: document.getElementById("errorNote"),
+      spectrumTitle: document.getElementById("spectrumTitle"),
+      spectrumNote: document.getElementById("spectrumNote"),
+      historyTitle: document.getElementById("historyTitle"),
+      historyNote: document.getElementById("historyNote")
+    };
+
+    const canvases = {
+      input: document.getElementById("inputCanvas"),
+      anti: document.getElementById("antiCanvas"),
+      error: document.getElementById("errorCanvas"),
+      spectrum: document.getElementById("spectrumCanvas"),
+      history: document.getElementById("historyCanvas")
+    };
+
+    document.getElementById("resetButton").addEventListener("click", resetState);
+    document.getElementById("micButton").addEventListener("click", startLiveMic);
+    Object.values(controls).forEach(control => control.addEventListener("input", updateLabels));
+    updateLabels();
+
+    function makeImpulse(indexes, values, length) {
+      const impulse = new Float32Array(length);
+      indexes.forEach((index, i) => impulse[index] = values[i]);
+      return impulse;
+    }
+
+    function resetState() {
+      state.w.fill(0);
+      state.xBuf.fill(0);
+      state.fxBuf.fill(0);
+      state.sBuf.fill(0);
+      state.pBuf.fill(0);
+      state.yBuf.fill(0);
+      state.input.fill(0);
+      state.anti.fill(0);
+      state.error.fill(0);
+      state.history.fill(0);
+      state.t = 0;
+      state.write = 0;
+      state.historyWrite = 0;
+    }
+
+    function updateLabels() {
+      labels.gain.textContent = Number(controls.gain.value).toFixed(2);
+      labels.delay.textContent = `${controls.delay.value} samples`;
+      labels.latency.textContent = `${controls.latency.value} ms`;
+      labels.mu.textContent = Number(controls.mu.value).toFixed(3);
+      const mode = controls.mode.value;
+      if (mode === "fxlms") {
+        labels.diagram.textContent = "FxLMS learns controller coefficients using a filtered reference.";
+      } else if (mode === "bluetooth") {
+        labels.diagram.textContent = "Bluetooth latency moves anti-noise far too late to cancel the original sound.";
+      } else if (mode === "live") {
+        labels.diagram.textContent = "Live mic mode reads your microphone and draws the electrical inverse; it does not output anti-noise.";
+      } else {
+        labels.diagram.textContent = "Inversion only helps when acoustic delay and phase line up at the target.";
+      }
+      updatePanelLabels(mode);
+    }
+
+    function updatePanelLabels(mode) {
+      if (mode === "live") {
+        labels.inputTitle.textContent = "Live microphone waveform";
+        labels.inputNote.textContent = "browser microphone";
+        labels.antiTitle.textContent = "Electrical inverse waveform";
+        labels.antiNote.textContent = "negative copy, not played";
+        labels.errorTitle.textContent = "Phase overlay";
+        labels.errorNote.textContent = "blue input vs orange inverse";
+        labels.spectrumTitle.textContent = "Live spectrum";
+        labels.spectrumNote.textContent = "mic vs inverse magnitude";
+        labels.historyTitle.textContent = "Live microphone level history";
+        labels.historyNote.textContent = "input dB over time";
+        return;
+      }
+      labels.inputTitle.textContent = "Incoming noise waveform";
+      labels.inputNote.textContent = "reference mic";
+      labels.antiTitle.textContent = "Generated anti-noise waveform";
+      labels.antiNote.textContent = "controller output";
+      labels.errorTitle.textContent = "Residual error waveform";
+      labels.errorNote.textContent = "target point";
+      labels.spectrumTitle.textContent = "Low-frequency spectrum";
+      labels.spectrumNote.textContent = "input vs residual";
+      labels.historyTitle.textContent = "FxLMS convergence history";
+      labels.historyNote.textContent = "error RMS over time";
+    }
+
+    async function startLiveMic() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
+        live.context = new (window.AudioContext || window.webkitAudioContext)();
+        live.source = live.context.createMediaStreamSource(stream);
+        live.analyser = live.context.createAnalyser();
+        live.analyser.fftSize = plotSize;
+        live.analyser.smoothingTimeConstant = 0;
+        live.buffer = new Float32Array(live.analyser.fftSize);
+        live.source.connect(live.analyser);
+        live.ready = true;
+        controls.mode.value = "live";
+        labels.micStatus.textContent = "On";
+        labels.status.textContent = "Live mic";
+        updateLabels();
+      } catch (error) {
+        labels.micStatus.textContent = "Blocked";
+        labels.status.textContent = "Mic blocked";
+        labels.diagram.textContent = `Microphone access failed: ${error.message}`;
+      }
+    }
+
+    function noiseSample() {
+      const seconds = state.t / sampleRate;
+      const type = controls.noise.value;
+      if (type === "engine") {
+        return 0.42 * Math.sin(2 * Math.PI * 55 * seconds)
+          + 0.28 * Math.sin(2 * Math.PI * 110 * seconds + 0.7)
+          + 0.14 * Math.sin(2 * Math.PI * 165 * seconds + 1.2)
+          + 0.025 * randomNormal();
+      }
+      if (type === "hum") {
+        return 0.4 * Math.sin(2 * Math.PI * 60 * seconds)
+          + 0.18 * Math.sin(2 * Math.PI * 120 * seconds)
+          + 0.07 * Math.sin(2 * Math.PI * 180 * seconds)
+          + 0.015 * randomNormal();
+      }
+      if (type === "speech") {
+        const gate = Math.sin(2 * Math.PI * 2.3 * seconds) > 0.2 ? 1 : 0.15;
+        return gate * (0.22 * Math.sin(2 * Math.PI * 190 * seconds)
+          + 0.16 * Math.sin(2 * Math.PI * 330 * seconds + 0.5)
+          + 0.10 * randomNormal());
+      }
+      return 0.38 * Math.sin(2 * Math.PI * 90 * seconds)
+        + 0.22 * Math.sin(2 * Math.PI * 180 * seconds + 0.3)
+        + 0.12 * Math.sin(2 * Math.PI * 270 * seconds + 1.1)
+        + 0.03 * randomNormal();
+    }
+
+    function randomNormal() {
+      let u = 0;
+      let v = 0;
+      while (u === 0) u = Math.random();
+      while (v === 0) v = Math.random();
+      return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+    }
+
+    function pushFront(buffer, sample) {
+      for (let i = buffer.length - 1; i > 0; i--) buffer[i] = buffer[i - 1];
+      buffer[0] = sample;
+    }
+
+    function dot(a, b) {
+      let total = 0;
+      for (let i = 0; i < a.length; i++) total += a[i] * b[i];
+      return total;
+    }
+
+    function delayedFromRing(buffer, delaySamples) {
+      const index = (state.write - delaySamples + plotSize) % plotSize;
+      return buffer[index];
+    }
+
+    function step() {
+      const mode = controls.mode.value;
+      const gain = Number(controls.gain.value);
+      const manualDelay = Number(controls.delay.value);
+      const latencySamples = Math.round(Number(controls.latency.value) * sampleRate / 1000);
+      const mu = Number(controls.mu.value);
+
+      let sumInput = 0;
+      let sumError = 0;
+      for (let n = 0; n < blockSize; n++) {
+        const x = noiseSample();
+        pushFront(state.pBuf, x);
+        const primary = dot(primaryPath, state.pBuf);
+
+        let y = 0;
+        if (mode === "simple") {
+          y = -gain * x;
+        } else if (mode === "delay") {
+          y = -gain * delayedFromRing(state.input, manualDelay);
+        } else if (mode === "bluetooth") {
+          y = -gain * delayedFromRing(state.input, Math.min(plotSize - 1, latencySamples));
+        } else {
+          pushFront(state.xBuf, x);
+          pushFront(state.sBuf, x);
+          const fx = dot(secondaryPath, state.sBuf);
+          pushFront(state.fxBuf, fx);
+          y = dot(state.w, state.xBuf);
+        }
+
+        pushFront(state.yBuf, y);
+        const secondary = dot(secondaryPath, state.yBuf);
+        const error = primary + secondary;
+
+        if (mode === "fxlms") {
+          const power = dot(state.fxBuf, state.fxBuf) + 1e-6;
+          const stepSize = mu * error / power;
+          for (let i = 0; i < state.w.length; i++) {
+            state.w[i] = Math.max(-3, Math.min(3, state.w[i] - stepSize * state.fxBuf[i]));
+          }
+        }
+
+        state.input[state.write] = x;
+        state.anti[state.write] = y;
+        state.error[state.write] = error;
+        state.write = (state.write + 1) % plotSize;
+        state.t++;
+        sumInput += x * x;
+        sumError += error * error;
+      }
+
+      const inputRms = Math.sqrt(sumInput / blockSize);
+      const errorRms = Math.sqrt(sumError / blockSize);
+      state.history[state.historyWrite] = db(inputRms) - db(errorRms);
+      state.historyWrite = (state.historyWrite + 1) % historySize;
+
+      labels.input.textContent = `${db(inputRms).toFixed(1)} dB`;
+      labels.error.textContent = `${db(errorRms).toFixed(1)} dB`;
+      labels.reduction.textContent = `${(db(inputRms) - db(errorRms)).toFixed(1)} dB`;
+      labels.status.textContent = statusText(mode, Number(controls.latency.value));
+    }
+
+    function statusText(mode, latencyMs) {
+      if (mode === "live") return live.ready ? "Live mic" : "Need mic";
+      if (mode === "bluetooth") return "Too late";
+      if (mode === "fxlms") return "Learning";
+      if (latencyMs > 20) return "Delay risk";
+      return "Demo only";
+    }
+
+    function db(value) {
+      return 20 * Math.log10(Math.max(value, 1e-9));
+    }
+
+    function ordered(buffer) {
+      const out = new Float32Array(buffer.length);
+      for (let i = 0; i < buffer.length; i++) {
+        out[i] = buffer[(state.write + i) % buffer.length];
+      }
+      return out;
+    }
+
+    function drawWave(canvas, data, color, scale = 1) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) {
+        const x = i / (data.length - 1) * w;
+        const y = h / 2 - data[i] * scale * h * 0.38;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = "#606775";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+    }
+
+    function drawOverlay(canvas, input, anti) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      drawLine(ctx, input, "#4aa3ff", w, h, 1.35);
+      drawLine(ctx, anti, "#ff9b45", w, h, 1.35);
+      const phaseScore = inverseCorrelation(input, anti);
+      ctx.fillStyle = "#f2f5f8";
+      ctx.font = `${Math.max(13, Math.round(h * 0.06))}px system-ui, sans-serif`;
+      ctx.fillText(`inverse correlation: ${phaseScore.toFixed(3)}`, 16, 28);
+      ctx.fillStyle = "#aab3bf";
+      ctx.fillText("1.000 means the orange trace is an exact negative copy of the blue trace", 16, 52);
+      ctx.strokeStyle = "#606775";
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+    }
+
+    function drawLine(ctx, data, color, w, h, scale) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < data.length; i++) {
+        const x = i / (data.length - 1) * w;
+        const y = h / 2 - data[i] * scale * h * 0.38;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function inverseCorrelation(input, anti) {
+      let xy = 0;
+      let xx = 0;
+      let yy = 0;
+      const n = Math.min(input.length, anti.length);
+      for (let i = 0; i < n; i++) {
+        xy += input[i] * anti[i];
+        xx += input[i] * input[i];
+        yy += anti[i] * anti[i];
+      }
+      return -xy / Math.sqrt(Math.max(xx * yy, 1e-12));
+    }
+
+    function drawSpectrum(canvas, input, error) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      const bins = 80;
+      const inSpec = simpleSpectrum(input, bins);
+      const errSpec = simpleSpectrum(error, bins);
+      for (let i = 0; i < bins; i++) {
+        const x = i / bins * w;
+        const barW = Math.max(2, w / bins - 3);
+        const inH = Math.min(h - 20, Math.max(2, inSpec[i] * h));
+        const errH = Math.min(h - 20, Math.max(2, errSpec[i] * h));
+        ctx.fillStyle = "rgba(74, 163, 255, 0.55)";
+        ctx.fillRect(x, h - inH, barW, inH);
+        ctx.fillStyle = "rgba(79, 209, 139, 0.75)";
+        ctx.fillRect(x + barW * 0.42, h - errH, barW * 0.55, errH);
+      }
+    }
+
+    function simpleSpectrum(data, bins) {
+      const result = new Float32Array(bins);
+      const n = Math.min(512, data.length);
+      for (let k = 0; k < bins; k++) {
+        let re = 0;
+        let im = 0;
+        const freqBin = k + 1;
+        for (let i = 0; i < n; i++) {
+          const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
+          const angle = 2 * Math.PI * freqBin * i / n;
+          re += data[data.length - n + i] * window * Math.cos(angle);
+          im -= data[data.length - n + i] * window * Math.sin(angle);
+        }
+        result[k] = Math.min(1, Math.sqrt(re * re + im * im) / 45);
+      }
+      return result;
+    }
+
+    function drawHistory(canvas) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      ctx.strokeStyle = "#ffd166";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < historySize; i++) {
+        const value = state.history[(state.historyWrite + i) % historySize];
+        const x = i / (historySize - 1) * w;
+        const y = h - Math.max(0, Math.min(1, (value + 10) / 40)) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function drawLiveHistory(canvas) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      ctx.strokeStyle = "#4aa3ff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < historySize; i++) {
+        const value = state.history[(state.historyWrite + i) % historySize];
+        const x = i / (historySize - 1) * w;
+        const y = h - Math.max(0, Math.min(1, (value + 70) / 70)) * h;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#aab3bf";
+      ctx.font = `${Math.max(12, Math.round(h * 0.05))}px system-ui, sans-serif`;
+      ctx.fillText("-70 dB", 12, h - 12);
+      ctx.fillText("0 dB", 12, 22);
+    }
+
+    function drawMessage(canvas, title, body) {
+      resizeCanvas(canvas);
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      drawGrid(ctx, w, h);
+      ctx.fillStyle = "#f2f5f8";
+      ctx.font = `700 ${Math.max(16, Math.round(h * 0.08))}px system-ui, sans-serif`;
+      ctx.fillText(title, 20, h / 2 - 12);
+      ctx.fillStyle = "#aab3bf";
+      ctx.font = `${Math.max(13, Math.round(h * 0.055))}px system-ui, sans-serif`;
+      ctx.fillText(body, 20, h / 2 + 18);
+    }
+
+    function drawGrid(ctx, w, h) {
+      ctx.fillStyle = "#0d0f12";
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "#252a32";
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 48) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 36) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+    }
+
+    function resizeCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.floor(rect.width * ratio));
+      const height = Math.max(1, Math.floor(rect.height * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    }
+
+    function render() {
+      let input;
+      let anti;
+      let error;
+      const mode = controls.mode.value;
+      if (mode === "live" && !live.ready) {
+        const zero = new Float32Array(plotSize);
+        drawMessage(canvases.input, "Microphone not started", "Click Start Microphone and allow browser access.");
+        drawMessage(canvases.anti, "Waiting for live input", "The inverse trace will appear here.");
+        drawMessage(canvases.error, "Phase overlay", "Blue input and orange inverse will be drawn together.");
+        drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after permission is granted.");
+        drawMessage(canvases.history, "Live level history", "Input dB history appears after permission is granted.");
+        labels.input.textContent = "--";
+        labels.error.textContent = "not measured";
+        labels.reduction.textContent = "visual only";
+        labels.status.textContent = "Need mic";
+        requestAnimationFrame(render);
+        return;
+      }
+      if (mode === "live" && live.ready) {
+        live.analyser.getFloatTimeDomainData(live.buffer);
+        input = live.buffer;
+        anti = new Float32Array(input.length);
+        error = new Float32Array(input.length);
+        const gain = Number(controls.gain.value);
+        let sumInput = 0;
+        for (let i = 0; i < input.length; i++) {
+          anti[i] = -gain * input[i];
+          sumInput += input[i] * input[i];
+        }
+        const inputRms = Math.sqrt(sumInput / input.length);
+        state.history[state.historyWrite] = db(inputRms);
+        state.historyWrite = (state.historyWrite + 1) % historySize;
+        labels.input.textContent = `${db(inputRms).toFixed(1)} dB`;
+        labels.error.textContent = "not measured";
+        labels.reduction.textContent = "visual only";
+        labels.status.textContent = "Live inverse";
+      } else {
+        for (let i = 0; i < 3; i++) step();
+        input = ordered(state.input);
+        anti = ordered(state.anti);
+        error = ordered(state.error);
+      }
+      drawWave(canvases.input, input, "#4aa3ff", 1.6);
+      drawWave(canvases.anti, anti, "#ff9b45", 1.8);
+      if (mode === "live") {
+        drawOverlay(canvases.error, input, anti);
+        drawSpectrum(canvases.spectrum, input, anti);
+        drawLiveHistory(canvases.history);
+      } else {
+        drawWave(canvases.error, error, "#4fd18b", 1.6);
+        drawSpectrum(canvases.spectrum, input, error);
+        drawHistory(canvases.history);
+      }
+      requestAnimationFrame(render);
+    }
+
+    render();
+  </script>
+</body>
+</html>
