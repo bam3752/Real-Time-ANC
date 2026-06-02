@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-"""
-Real-Time ANC Research Demo
-
-Install:
-    pip install sounddevice numpy scipy PyQt6 pyqtgraph
-
-Run:
-    python anc_research_demo.py
-
-This is a school-project prototype for active noise control concepts. It is
-not a production ANC system and it defaults to muted output.
-"""
-
 from __future__ import annotations
 
 import math
@@ -128,6 +114,33 @@ notes that delay has a major effect on broadband noise reduction, which is why
 true ANC systems are designed around very low-latency signal paths.
 Source: https://www.mdpi.com/2076-3417/8/11/2313
 
+The desktop simulation tab and browser visual dashboard include a simplified
+Subband FxLMS mode. It splits the reference into low and high branches and
+adapts separate controllers against the same error signal. This is not a full
+production subband implementation, but it demonstrates why band-specific
+adaptation can converge differently across frequency ranges.
+
+## Online secondary-path tracking and Akhtar's Method
+
+Some ANC systems need the secondary-path estimate to keep changing while the
+controller is running, because the loudspeaker-to-error-microphone path changes
+with fit, position, temperature, and nearby objects. Akhtar, Abe, and Kawamata
+published online secondary-path modeling methods for ANC that inject auxiliary
+random noise and adapt a secondary-path modeling filter during operation. Later
+work discusses auxiliary-noise power scheduling so the probe signal can be
+reduced after the control system stabilizes.
+
+The desktop simulation tab and browser visual dashboard include a simplified
+Akhtar-style online SPM mode. It injects a very small scheduled probe signal,
+updates a secondary-path estimate online, and uses that estimate in the FxLMS
+filtered-reference update. This is a teaching model of the idea, not a
+calibrated implementation of every detail in Akhtar's papers.
+
+Sources:
+- https://research.nu.edu.kz/en/publications/a-method-for-online-secondary-path-modeling-in-active-noise-contr
+- https://www.researchgate.net/publication/228991573_A_Technique_for_Active_Noise_Control_Systems_With_Online_Secondary_Path_Modeling_Using_Additive_Noise_Power_Scheduling
+- https://www.mdpi.com/2076-3417/7/12/1236
+
 ## Why ANC focuses on low frequencies
 
 Low-frequency noise has long wavelengths and is often steady: engines, fans, air
@@ -160,6 +173,9 @@ This app demonstrates the difference between:
 - a controlled FxLMS simulation where convergence can be measured, and
 - an experimental real-time FxLMS mode that requires an error microphone and a
   secondary-path estimate.
+
+The simulation views also demonstrate Subband FxLMS and an Akhtar-style online
+secondary-path modeling mode using simplified simulations.
 
 It also measures RMS, dBFS, spectrum, and simulation error reduction. It does
 not claim true open-air cancellation unless an error microphone actually
@@ -205,8 +221,8 @@ Limitations:
 Future improvements:
 - JACK/CoreAudio low-latency routing support.
 - True multichannel ANC with several reference and error microphones.
-- Frequency-domain or subband FxLMS.
-- Online secondary-path tracking with injected low-level probe noise.
+- Real-time audio implementation of Subband FxLMS.
+- Full Akhtar online secondary-path tracking with robust probe-noise scheduling.
 - Better wind-noise and coherence detection.
 - Exportable plots and report PDF generation.
 """
@@ -514,9 +530,19 @@ class AudioEngine:
 class FxLMSSimulation:
     def __init__(self, sample_rate: int = 48_000) -> None:
         self.sample_rate = int(sample_rate)
+        self.mode = "Standard FxLMS"
         self.primary = np.array([0.0] * 24 + [0.9, 0.25, -0.12, 0.06], dtype=np.float32)
         self.secondary = SecondaryPathEstimator.default_path()
         self.controller = FxNLMSFilter(160, self.secondary, mu=0.04, leak=1.0e-5)
+        self.subband_low = FxNLMSFilter(160, self.secondary, mu=0.035, leak=1.0e-5)
+        self.subband_high = FxNLMSFilter(160, self.secondary, mu=0.015, leak=1.0e-5)
+        self.subband_low_state = 0.0
+        self.s_hat = np.zeros_like(self.secondary)
+        self.s_hat[12] = 0.4
+        self.akhtar_controller = FxNLMSFilter(160, self.s_hat, mu=0.035, leak=1.0e-5)
+        self.akhtar_probe_buf = np.zeros(self.secondary.size, dtype=np.float32)
+        self.akhtar_model_buf = np.zeros(self.secondary.size, dtype=np.float32)
+        self.akhtar_probe_level = 0.025
         self.pbuf = np.zeros(self.primary.size, dtype=np.float32)
         self.ybuf = np.zeros(self.secondary.size, dtype=np.float32)
         self.t = 0
@@ -524,14 +550,35 @@ class FxLMSSimulation:
         self.ref_history = RingBuffer(48_000)
         self.anti_history = RingBuffer(48_000)
 
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.reset()
+
     def reset(self) -> None:
         self.controller.reset()
+        self.subband_low.reset()
+        self.subband_high.reset()
+        self.akhtar_controller.reset()
+        self.subband_low_state = 0.0
+        self.s_hat.fill(0.0)
+        self.s_hat[12] = 0.4
+        self.akhtar_controller.set_secondary_path(self.s_hat)
+        self.akhtar_probe_buf.fill(0.0)
+        self.akhtar_model_buf.fill(0.0)
+        self.akhtar_probe_level = 0.025
         self.pbuf.fill(0.0)
         self.ybuf.fill(0.0)
         self.t = 0
         self.error_history.clear()
         self.ref_history.clear()
         self.anti_history.clear()
+
+    def simulation_weights(self) -> np.ndarray:
+        if self.mode == "Subband FxLMS":
+            return np.concatenate((self.subband_low.w, self.subband_high.w)).astype(np.float32)
+        if self.mode == "Akhtar online SPM":
+            return self.s_hat.astype(np.float32)
+        return self.controller.w
 
     def step(self, n: int = 512) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         ref = np.empty(n, dtype=np.float32)
@@ -548,14 +595,42 @@ class FxLMSSimulation:
             self.pbuf[1:] = self.pbuf[:-1]
             self.pbuf[0] = fan
             primary_at_error = float(np.dot(self.primary, self.pbuf))
-            y = self.controller.predict_sample(fan)
+            probe = 0.0
+            if self.mode == "Subband FxLMS":
+                self.subband_low_state = 0.985 * self.subband_low_state + 0.015 * fan
+                low_ref = self.subband_low_state
+                high_ref = fan - low_ref
+                y = self.subband_low.predict_sample(low_ref) + self.subband_high.predict_sample(high_ref)
+            elif self.mode == "Akhtar online SPM":
+                self.akhtar_controller.secondary_path[:] = self.s_hat
+                y = self.akhtar_controller.predict_sample(fan)
+                probe = self.akhtar_probe_level * float(np.random.randn())
+            else:
+                y = self.controller.predict_sample(fan)
             self.ybuf[1:] = self.ybuf[:-1]
-            self.ybuf[0] = y
+            self.ybuf[0] = y + probe
             secondary_at_error = float(np.dot(self.secondary, self.ybuf))
             e = primary_at_error + secondary_at_error
-            self.controller.adapt(e)
+            if self.mode == "Subband FxLMS":
+                self.subband_low.adapt(e)
+                self.subband_high.adapt(e)
+            elif self.mode == "Akhtar online SPM":
+                self.akhtar_controller.adapt(e)
+                self.akhtar_probe_buf[1:] = self.akhtar_probe_buf[:-1]
+                self.akhtar_probe_buf[0] = probe
+                self.akhtar_model_buf[1:] = self.akhtar_model_buf[:-1]
+                self.akhtar_model_buf[0] = probe
+                actual_probe = float(np.dot(self.secondary, self.akhtar_probe_buf))
+                estimated_probe = float(np.dot(self.s_hat, self.akhtar_model_buf))
+                model_error = actual_probe - estimated_probe
+                model_power = float(np.dot(self.akhtar_model_buf, self.akhtar_model_buf)) + 1.0e-6
+                self.s_hat += (0.02 * model_error / model_power) * self.akhtar_model_buf
+                np.clip(self.s_hat, -2.0, 2.0, out=self.s_hat)
+                self.akhtar_probe_level = max(0.004, min(0.025, self.akhtar_probe_level * 0.99995))
+            else:
+                self.controller.adapt(e)
             ref[i] = fan
-            anti[i] = y
+            anti[i] = y + probe
             err[i] = e
             self.t += 1
         self.ref_history.push(ref)
@@ -831,11 +906,17 @@ class MainWindow(QtWidgets.QMainWindow):
         controls = QtWidgets.QHBoxLayout()
         layout.addLayout(controls)
         self.sim_reset_button = QtWidgets.QPushButton("Reset Simulation")
+        self.sim_mode_combo = QtWidgets.QComboBox()
+        for mode in ("Standard FxLMS", "Subband FxLMS", "Akhtar online SPM"):
+            self.sim_mode_combo.addItem(mode)
+        controls.addWidget(QtWidgets.QLabel("Simulation mode"))
+        controls.addWidget(self.sim_mode_combo)
         controls.addWidget(self.sim_reset_button)
         self.sim_status = QtWidgets.QLabel("Controlled fan/motor simulation is running.")
         controls.addWidget(self.sim_status)
         controls.addStretch(1)
         self.sim_reset_button.clicked.connect(self.simulation.reset)
+        self.sim_mode_combo.currentTextChanged.connect(self.simulation.set_mode)
 
         grid = QtWidgets.QGridLayout()
         layout.addLayout(grid, 1)
@@ -1257,7 +1338,9 @@ class MainWindow(QtWidgets.QMainWindow):
             recent = rms(err[-2048:])
             early = rms(err[:2048]) if err.size > 4096 else recent
             reduction = dbfs(early) - dbfs(recent)
-            self.sim_status.setText(f"Simulation recent error: {dbfs(recent):.1f} dBFS, reduction vs start: {reduction:.1f} dB")
+            self.sim_status.setText(
+                f"{self.simulation.mode}: recent error {dbfs(recent):.1f} dBFS, reduction vs start {reduction:.1f} dB"
+            )
 
     def update_plots(self) -> None:
         sample_rate = self.settings.sample_rate
@@ -1300,7 +1383,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for start in range(0, sim_err.size - window + 1, hop):
                 values.append(dbfs(rms(sim_err[start : start + window])))
             self.sim_learning_curve.setData(np.arange(len(values)), np.asarray(values))
-        self.sim_weight_curve.setData(self.simulation.controller.w)
+        self.sim_weight_curve.setData(self.simulation.simulation_weights())
 
         with self.metrics_lock:
             metrics = dict(self.last_metrics)

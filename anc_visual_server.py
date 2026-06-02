@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Open the ANC visual dashboard in a local browser.
-
-Run:
-    python anc_visual_server.py
-
-This server only serves files from the project directory. It does not provide
-real audio input or output; it is a visual companion to anc_research_demo.py.
-"""
-
 from __future__ import annotations
 
 import argparse
