@@ -133,9 +133,9 @@ class DelayLine:
         delay = int(np.clip(delay_samples, 0, self.buffer.size - 1))
         y = np.empty_like(x, dtype=np.float32)
         for i, sample in enumerate(np.asarray(x, dtype=np.float32)):
+            self.buffer[self.write_index] = sample
             read_index = (self.write_index - delay) % self.buffer.size
             y[i] = self.buffer[read_index]
-            self.buffer[self.write_index] = sample
             self.write_index = (self.write_index + 1) % self.buffer.size
         return y
 

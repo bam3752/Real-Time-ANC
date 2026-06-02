@@ -240,7 +240,6 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">Live microphone waveform</div>
-            <div class="panel-note">Python audio core</div>
           </div>
           <canvas id="inputCanvas"></canvas>
         </div>
@@ -248,7 +247,6 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">Electrical inverse waveform</div>
-            <div class="panel-note">RealtimeANCProcessor output</div>
           </div>
           <canvas id="antiCanvas"></canvas>
         </div>
@@ -563,7 +561,7 @@
     }
 
     function drawWaiting() {
-      drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to start the Python audio core.");
+      drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to begin audio capture and visualization.");
       drawMessage(canvases.anti, "Waiting for core data", "The inverse trace will appear here.");
       drawMessage(canvases.overlay, "Phase overlay", "Blue input and orange inverse will be drawn together.");
       drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after the server starts.");
