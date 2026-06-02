@@ -6,8 +6,12 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-import sounddevice as sd
 from scipy import signal
+
+try:
+    import sounddevice as sd
+except Exception:
+    sd = None
 
 
 SECONDARY_PATH_FILE = "secondary_path_estimate.npz"
@@ -40,6 +44,25 @@ def clip_audio(x: np.ndarray, limit: float = 0.8) -> np.ndarray:
     return np.clip(np.asarray(x, dtype=np.float32), -float(limit), float(limit)).astype(np.float32)
 
 
+def exact_inverse(x: np.ndarray, gain: float) -> np.ndarray:
+    return (-float(gain) * np.asarray(x, dtype=np.float32)).astype(np.float32)
+
+
+def inverse_correlation(x: np.ndarray, inverse: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float32).reshape(-1)
+    inverse = np.asarray(inverse, dtype=np.float32).reshape(-1)
+    n = min(x.size, inverse.size)
+    if n == 0:
+        return 0.0
+    x = x[:n]
+    inverse = inverse[:n]
+    xx = float(np.dot(x, x))
+    yy = float(np.dot(inverse, inverse))
+    if xx <= 1.0e-12 or yy <= 1.0e-12:
+        return 0.0
+    return float(-np.dot(x, inverse) / math.sqrt(xx * yy))
+
+
 def estimate_delay_samples(
     reference: np.ndarray,
     measured: np.ndarray,
@@ -67,6 +90,8 @@ def estimate_delay_samples(
 
 
 def list_audio_devices() -> list[dict[str, object]]:
+    if sd is None:
+        return []
     devices = []
     for index, device in enumerate(sd.query_devices()):
         devices.append(
@@ -122,6 +147,85 @@ class RingBuffer:
             self.data.fill(0.0)
             self.index = 0
             self.full = False
+
+
+class SynchronizedVisualFrame:
+    def __init__(self, display_samples: int = 4096, sample_rate: int = 48_000) -> None:
+        self.display_samples = int(display_samples)
+        self.sample_rate = int(sample_rate)
+        self.input = np.zeros(self.display_samples, dtype=np.float32)
+        self.inverse = np.zeros(self.display_samples, dtype=np.float32)
+        self.sequence = 0
+        self.gain = 0.0
+        self.input_rms = 0.0
+        self.inverse_rms = 0.0
+        self.correlation = 0.0
+        self.lock = threading.Lock()
+
+    def configure(self, display_samples: int | None = None, sample_rate: int | None = None) -> None:
+        with self.lock:
+            if sample_rate is not None:
+                self.sample_rate = int(sample_rate)
+            if display_samples is not None and int(display_samples) != self.display_samples:
+                self.display_samples = int(display_samples)
+                self.input = np.zeros(self.display_samples, dtype=np.float32)
+                self.inverse = np.zeros(self.display_samples, dtype=np.float32)
+                self.sequence = 0
+                self.input_rms = 0.0
+                self.inverse_rms = 0.0
+                self.correlation = 0.0
+
+    def update(self, input_block: np.ndarray, gain: float) -> dict[str, object]:
+        input_block = np.asarray(input_block, dtype=np.float32).reshape(-1)
+        inverse_block = exact_inverse(input_block, gain)
+        with self.lock:
+            self.input = self._append(self.input, input_block)
+            self.inverse = self._append(self.inverse, inverse_block)
+            self.sequence += 1
+            self.gain = float(gain)
+            self.input_rms = rms(self.input)
+            self.inverse_rms = rms(self.inverse)
+            self.correlation = inverse_correlation(self.input, self.inverse)
+            return self._snapshot_locked()
+
+    def snapshot(self) -> dict[str, object]:
+        with self.lock:
+            return self._snapshot_locked()
+
+    def clear(self) -> None:
+        with self.lock:
+            self.input.fill(0.0)
+            self.inverse.fill(0.0)
+            self.sequence = 0
+            self.gain = 0.0
+            self.input_rms = 0.0
+            self.inverse_rms = 0.0
+            self.correlation = 0.0
+
+    def _snapshot_locked(self) -> dict[str, object]:
+        return {
+            "sequence": self.sequence,
+            "sample_rate": self.sample_rate,
+            "gain": self.gain,
+            "input": self.input.copy(),
+            "inverse": self.inverse.copy(),
+            "input_rms": self.input_rms,
+            "input_dbfs": dbfs(self.input_rms),
+            "inverse_rms": self.inverse_rms,
+            "inverse_dbfs": dbfs(self.inverse_rms),
+            "inverse_correlation": self.correlation,
+        }
+
+    @staticmethod
+    def _append(existing: np.ndarray, values: np.ndarray) -> np.ndarray:
+        if values.size == 0:
+            return existing.copy()
+        if values.size >= existing.size:
+            return values[-existing.size :].astype(np.float32).copy()
+        out = np.empty_like(existing)
+        out[:-values.size] = existing[values.size :]
+        out[-values.size :] = values
+        return out
 
 
 class DelayLine:
@@ -613,6 +717,8 @@ class AudioEngine:
         input_channels: int,
         output_channels: int,
     ) -> None:
+        if sd is None:
+            raise RuntimeError("sounddevice is not available in this environment")
         self.stop()
         self.stream = sd.Stream(
             device=(input_device, output_device),
@@ -721,6 +827,7 @@ class RealtimeANCProcessor:
         self.anti_ring = RingBuffer(self.settings.sample_rate * 5)
         self.err_ring = RingBuffer(self.settings.sample_rate * 5)
         self.probe_ring = RingBuffer(self.settings.sample_rate * 5)
+        self.visual_frame = SynchronizedVisualFrame(4096, self.settings.sample_rate)
         self.metrics = AudioMetrics()
         self.lock = threading.Lock()
 
@@ -754,6 +861,7 @@ class RealtimeANCProcessor:
                 self.anti_ring = RingBuffer(settings.sample_rate * 5)
                 self.err_ring = RingBuffer(settings.sample_rate * 5)
                 self.probe_ring = RingBuffer(settings.sample_rate * 5)
+                self.visual_frame.configure(sample_rate=settings.sample_rate)
 
     def set_secondary_path(self, path: np.ndarray) -> None:
         with self.lock:
@@ -777,7 +885,16 @@ class RealtimeANCProcessor:
             self.anti_ring.clear()
             self.err_ring.clear()
             self.probe_ring.clear()
+            self.visual_frame.clear()
             self.metrics = AudioMetrics()
+
+    def update_visual_frame(self, input_block: np.ndarray, gain: float | None = None) -> dict[str, object]:
+        if gain is None:
+            gain = self.settings.gain
+        return self.visual_frame.update(input_block, gain)
+
+    def visual_snapshot(self) -> dict[str, object]:
+        return self.visual_frame.snapshot()
 
     def estimate_recent_delay(self, max_delay_ms: float = 100.0) -> tuple[int, float]:
         delay, confidence = estimate_delay_samples(

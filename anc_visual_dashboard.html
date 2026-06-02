@@ -230,8 +230,8 @@
 
       <div class="control-group">
         <label for="gainSlider">Inverse gain</label>
-        <input id="gainSlider" type="range" min="0" max="1" step="0.01" value="0.35">
-        <div class="row"><span>Gain</span><span id="gainValue" class="value">0.35</span></div>
+        <input id="gainSlider" type="range" min="0" max="1" step="0.01" value="1">
+        <div class="row"><span>Gain</span><span id="gainValue" class="value">1.00</span></div>
       </div>
     </aside>
 
@@ -246,7 +246,7 @@
 
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">Electrical inverse waveform</div>
+            <div class="panel-title">Exact inverse waveform</div>
           </div>
           <canvas id="antiCanvas"></canvas>
         </div>
@@ -262,7 +262,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">Live spectrum</div>
-            <div class="panel-note">mic vs inverse magnitude</div>
+            <div class="panel-note">gain-scaled mic vs inverse magnitude</div>
           </div>
           <canvas id="spectrumCanvas"></canvas>
         </div>
@@ -280,15 +280,27 @@
 
   <script>
     const plotSize = 2048;
+    const processSize = 1024;
     const historySize = 260;
 
     const state = {
       history: new Float32Array(historySize),
       historyWrite: 0,
       running: false,
+      validating: false,
       input: new Float32Array(plotSize),
-      anti: new Float32Array(plotSize),
-      lastFrameAt: 0
+      inverse: new Float32Array(plotSize),
+      inverseCorrelation: 0,
+      serverCorrelation: 0,
+      lastFrameAt: 0,
+      lastValidationAt: 0
+    };
+
+    const live = {
+      context: null,
+      stream: null,
+      source: null,
+      processor: null
     };
 
     const controls = {
@@ -303,7 +315,7 @@
 
     const canvases = {
       input: document.getElementById("inputCanvas"),
-      anti: document.getElementById("antiCanvas"),
+      inverse: document.getElementById("antiCanvas"),
       overlay: document.getElementById("overlayCanvas"),
       spectrum: document.getElementById("spectrumCanvas"),
       history: document.getElementById("historyCanvas")
@@ -314,10 +326,8 @@
     micButton.addEventListener("click", toggleAudioCore);
     controls.gain.addEventListener("input", () => {
       updateLabels();
-      sendConfig();
     });
     updateLabels();
-    setInterval(pollFrame, 45);
 
     function updateLabels() {
       labels.gain.textContent = Number(controls.gain.value).toFixed(2);
@@ -333,66 +343,153 @@
 
     async function startAudioCore() {
       try {
-        const url = `/api/start?gain=${encodeURIComponent(controls.gain.value)}`;
-        const response = await fetch(url);
-        const payload = await response.json();
-        if (!payload.ok) throw new Error(payload.status || "audio start failed");
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
+        const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        const source = context.createMediaStreamSource(stream);
+        const processor = context.createScriptProcessor(processSize, 1, 1);
+        processor.onaudioprocess = handleAudioProcess;
+        source.connect(processor);
+        processor.connect(context.destination);
+        live.context = context;
+        live.stream = stream;
+        live.source = source;
+        live.processor = processor;
         state.running = true;
         labels.micStatus.textContent = "On";
         micButton.textContent = "Stop Microphone";
       } catch (error) {
         state.running = false;
         labels.micStatus.textContent = "Error";
-        labels.input.textContent = "server error";
+        labels.input.textContent = "mic error";
       }
     }
 
     async function stopAudioCore() {
-      try {
-        await fetch("/api/stop");
-      } finally {
-        state.running = false;
-        labels.micStatus.textContent = "Off";
-        micButton.textContent = "Start Microphone";
+      state.running = false;
+      state.validating = false;
+      if (live.processor) {
+        try {
+          live.processor.disconnect();
+        } catch (_) {
+        }
       }
+      if (live.source) {
+        try {
+          live.source.disconnect();
+        } catch (_) {
+        }
+      }
+      if (live.stream) {
+        live.stream.getTracks().forEach(track => track.stop());
+      }
+      if (live.context) {
+        await live.context.close();
+      }
+      live.context = null;
+      live.stream = null;
+      live.source = null;
+      live.processor = null;
+      labels.micStatus.textContent = "Off";
+      micButton.textContent = "Start Microphone";
     }
 
-    async function sendConfig() {
+    function handleAudioProcess(event) {
+      const output = event.outputBuffer.getChannelData(0);
+      output.fill(0);
       if (!state.running) return;
-      try {
-        await fetch(`/api/config?gain=${encodeURIComponent(controls.gain.value)}`);
-      } catch (_) {
-      }
+      const input = event.inputBuffer.getChannelData(0);
+      const gain = Number(controls.gain.value);
+      const inverse = exactInverse(input, gain);
+      state.input = appendBlock(state.input, input);
+      state.inverse = appendBlock(state.inverse, inverse);
+      state.inverseCorrelation = inverseCorrelation(state.input, state.inverse);
+      state.lastFrameAt = performance.now();
+      const inputDb = db(rms(input));
+      state.history[state.historyWrite] = inputDb;
+      state.historyWrite = (state.historyWrite + 1) % historySize;
+      labels.input.textContent = `${inputDb.toFixed(1)} dB`;
+      maybeValidateWithServer(input, live.context ? live.context.sampleRate : 48000);
     }
 
-    async function pollFrame() {
-      if (!state.running) return;
-      try {
-        const response = await fetch("/api/frame", { cache: "no-store" });
-        const payload = await response.json();
-        state.running = Boolean(payload.running);
-        labels.micStatus.textContent = state.running ? "On" : "Off";
-        micButton.textContent = state.running ? "Stop Microphone" : "Start Microphone";
-        state.input = padFrame(payload.input || []);
-        state.anti = padFrame(payload.anti || []);
-        state.lastFrameAt = performance.now();
-        const inputDb = Number(payload.metrics.input_dbfs);
-        state.history[state.historyWrite] = inputDb;
-        state.historyWrite = (state.historyWrite + 1) % historySize;
-        labels.input.textContent = `${inputDb.toFixed(1)} dB`;
-      } catch (_) {
-        labels.micStatus.textContent = "Server off";
-      }
-    }
-
-    function padFrame(values) {
-      const out = new Float32Array(plotSize);
-      const start = Math.max(0, values.length - plotSize);
-      const count = Math.min(plotSize, values.length);
-      for (let i = 0; i < count; i++) {
-        out[plotSize - count + i] = Number(values[start + i]) || 0;
+    function exactInverse(input, gain) {
+      const out = new Float32Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        out[i] = -gain * input[i];
       }
       return out;
+    }
+
+    function appendBlock(existing, block) {
+      const out = new Float32Array(existing.length);
+      if (block.length >= existing.length) {
+        out.set(block.subarray(block.length - existing.length));
+        return out;
+      }
+      out.set(existing.subarray(block.length));
+      out.set(block, existing.length - block.length);
+      return out;
+    }
+
+    function rms(values) {
+      let sum = 0;
+      for (let i = 0; i < values.length; i++) {
+        sum += values[i] * values[i];
+      }
+      return Math.sqrt(sum / Math.max(1, values.length));
+    }
+
+    function db(value) {
+      return 20 * Math.log10(Math.max(value, 1e-9));
+    }
+
+    function inverseCorrelation(input, inverse) {
+      let xy = 0;
+      let xx = 0;
+      let yy = 0;
+      const n = Math.min(input.length, inverse.length);
+      for (let i = 0; i < n; i++) {
+        xy += input[i] * inverse[i];
+        xx += input[i] * input[i];
+        yy += inverse[i] * inverse[i];
+      }
+      if (xx <= 1e-12 || yy <= 1e-12) return 0;
+      return -xy / Math.sqrt(xx * yy);
+    }
+
+    function maybeValidateWithServer(input, sampleRate) {
+      const now = performance.now();
+      if (state.validating || now - state.lastValidationAt < 500) return;
+      state.validating = true;
+      state.lastValidationAt = now;
+      validateWithServer(input, sampleRate);
+    }
+
+    async function validateWithServer(input, sampleRate) {
+      try {
+        const response = await fetch("/api/invert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            samples: Array.from(input),
+            gain: Number(controls.gain.value),
+            sample_rate: sampleRate,
+            display_samples: plotSize
+          })
+        });
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.status || "invert failed");
+        state.serverCorrelation = Number(payload.inverse_correlation) || 0;
+      } catch (_) {
+        labels.micStatus.textContent = "Server off";
+      } finally {
+        state.validating = false;
+      }
     }
 
     function drawWave(canvas, data, color, scale = 1) {
@@ -411,7 +508,7 @@
       ctx.stroke();
     }
 
-    function drawOverlay(canvas, input, anti) {
+    function drawOverlay(canvas, input, inverse, correlation, serverCorrelation) {
       resizeCanvas(canvas);
       const ctx = canvas.getContext("2d");
       const w = canvas.width;
@@ -419,13 +516,12 @@
       ctx.clearRect(0, 0, w, h);
       drawGrid(ctx, w, h);
       drawLine(ctx, input, "#5aa7e8", w, h, 1.35);
-      drawLine(ctx, anti, "#e98b3a", w, h, 1.35);
-      const phaseScore = inverseCorrelation(input, anti);
+      drawLine(ctx, inverse, "#e98b3a", w, h, 1.35);
       ctx.fillStyle = "#edf1f5";
       ctx.font = `${Math.max(13, Math.round(h * 0.06))}px system-ui, sans-serif`;
-      ctx.fillText(`inverse correlation: ${phaseScore.toFixed(3)}`, 16, 28);
+      ctx.fillText(`inverse correlation: ${correlation.toFixed(3)}`, 16, 28);
       ctx.fillStyle = "#9ea8b4";
-      ctx.fillText("1.000 means the orange trace is an exact negative copy", 16, 52);
+      ctx.fillText(`server check: ${serverCorrelation.toFixed(3)}`, 16, 52);
     }
 
     function drawLine(ctx, data, color, w, h, scale) {
@@ -441,20 +537,7 @@
       ctx.stroke();
     }
 
-    function inverseCorrelation(input, anti) {
-      let xy = 0;
-      let xx = 0;
-      let yy = 0;
-      const n = Math.min(input.length, anti.length);
-      for (let i = 0; i < n; i++) {
-        xy += input[i] * anti[i];
-        xx += input[i] * input[i];
-        yy += anti[i] * anti[i];
-      }
-      return -xy / Math.sqrt(Math.max(xx * yy, 1e-12));
-    }
-
-    function drawSpectrum(canvas, input, anti) {
+    function drawSpectrum(canvas, input, inverse, gain) {
       resizeCanvas(canvas);
       const ctx = canvas.getContext("2d");
       const w = canvas.width;
@@ -462,21 +545,21 @@
       ctx.clearRect(0, 0, w, h);
       drawGrid(ctx, w, h);
       const bins = 80;
-      const inSpec = simpleSpectrum(input, bins);
-      const antiSpec = simpleSpectrum(anti, bins);
+      const inSpec = simpleSpectrum(input, bins, gain);
+      const inverseSpec = simpleSpectrum(inverse, bins);
       for (let i = 0; i < bins; i++) {
         const x = i / bins * w;
         const barW = Math.max(2, w / bins - 3);
         const inH = Math.min(h - 20, Math.max(2, inSpec[i] * h));
-        const antiH = Math.min(h - 20, Math.max(2, antiSpec[i] * h));
+        const inverseH = Math.min(h - 20, Math.max(2, inverseSpec[i] * h));
         ctx.fillStyle = "rgba(90, 167, 232, 0.55)";
         ctx.fillRect(x, h - inH, barW, inH);
         ctx.fillStyle = "rgba(233, 139, 58, 0.70)";
-        ctx.fillRect(x + barW * 0.42, h - antiH, barW * 0.55, antiH);
+        ctx.fillRect(x + barW * 0.42, h - inverseH, barW * 0.55, inverseH);
       }
     }
 
-    function simpleSpectrum(data, bins) {
+    function simpleSpectrum(data, bins, multiplier = 1) {
       const result = new Float32Array(bins);
       const n = Math.min(512, data.length);
       for (let k = 0; k < bins; k++) {
@@ -486,7 +569,7 @@
         for (let i = 0; i < n; i++) {
           const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
           const angle = 2 * Math.PI * freqBin * i / n;
-          const sample = data[data.length - n + i] * window;
+          const sample = data[data.length - n + i] * window * multiplier;
           re += sample * Math.cos(angle);
           im -= sample * Math.sin(angle);
         }
@@ -562,7 +645,7 @@
 
     function drawWaiting() {
       drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to begin audio capture and visualization.");
-      drawMessage(canvases.anti, "Waiting for core data", "The inverse trace will appear here.");
+      drawMessage(canvases.inverse, "Waiting for core data", "The inverse trace will appear here.");
       drawMessage(canvases.overlay, "Phase overlay", "Blue input and orange inverse will be drawn together.");
       drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after the server starts.");
       drawMessage(canvases.history, "Live level history", "Input dB history appears after the server starts.");
@@ -576,11 +659,12 @@
       }
 
       const input = state.input;
-      const anti = state.anti;
+      const inverse = state.inverse;
+      const gain = Number(controls.gain.value);
       drawWave(canvases.input, input, "#5aa7e8", 1.6);
-      drawWave(canvases.anti, anti, "#e98b3a", 1.8);
-      drawOverlay(canvases.overlay, input, anti);
-      drawSpectrum(canvases.spectrum, input, anti);
+      drawWave(canvases.inverse, inverse, "#e98b3a", 1.6);
+      drawOverlay(canvases.overlay, input, inverse, state.inverseCorrelation, state.serverCorrelation);
+      drawSpectrum(canvases.spectrum, input, inverse, gain);
       drawHistory(canvases.history);
       requestAnimationFrame(render);
     }
