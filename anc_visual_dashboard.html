@@ -288,10 +288,13 @@
       historyWrite: 0,
       running: false,
       validating: false,
+      starting: false,
       input: new Float32Array(plotSize),
       inverse: new Float32Array(plotSize),
       inverseCorrelation: 0,
       serverCorrelation: 0,
+      errorTitle: "",
+      errorBody: "",
       lastFrameAt: 0,
       lastValidationAt: 0
     };
@@ -342,15 +345,18 @@
     }
 
     async function startAudioCore() {
+      if (state.starting) return;
+      state.starting = true;
+      state.errorTitle = "";
+      state.errorBody = "";
+      labels.micStatus.textContent = "Starting";
+      micButton.textContent = "Starting...";
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
+        const stream = await openMicrophone();
         const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+        if (context.state === "suspended") {
+          await context.resume();
+        }
         const source = context.createMediaStreamSource(stream);
         const processor = context.createScriptProcessor(processSize, 1, 1);
         processor.onaudioprocess = handleAudioProcess;
@@ -365,9 +371,58 @@
         micButton.textContent = "Stop Microphone";
       } catch (error) {
         state.running = false;
+        state.errorTitle = microphoneErrorTitle(error);
+        state.errorBody = microphoneErrorBody(error);
         labels.micStatus.textContent = "Error";
-        labels.input.textContent = "mic error";
+        labels.input.textContent = state.errorTitle;
+        micButton.textContent = "Start Microphone";
+      } finally {
+        state.starting = false;
       }
+    }
+
+    async function openMicrophone() {
+      if (!window.isSecureContext) {
+        throw new Error("This page must be opened with HTTPS or localhost for microphone access.");
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error("This browser does not expose microphone capture to this page.");
+      }
+      try {
+        return await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: { ideal: 1 },
+            sampleRate: { ideal: 48000 },
+            echoCancellation: { ideal: false },
+            noiseSuppression: { ideal: false },
+            autoGainControl: { ideal: false }
+          }
+        });
+      } catch (firstError) {
+        try {
+          return await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (_) {
+          throw firstError;
+        }
+      }
+    }
+
+    function microphoneErrorTitle(error) {
+      const name = error && error.name ? error.name : "Mic error";
+      if (name === "NotAllowedError" || name === "SecurityError") return "Permission blocked";
+      if (name === "NotFoundError" || name === "DevicesNotFoundError") return "No microphone";
+      if (name === "NotReadableError" || name === "TrackStartError") return "Mic busy";
+      if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") return "Mic constraint";
+      return "Mic error";
+    }
+
+    function microphoneErrorBody(error) {
+      const name = error && error.name ? error.name : "Error";
+      const message = error && error.message ? error.message : "The browser did not allow microphone capture.";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        return "Allow microphone access in the browser's site settings, then press Start Microphone again.";
+      }
+      return `${name}: ${message}`;
     }
 
     async function stopAudioCore() {
@@ -644,7 +699,11 @@
     }
 
     function drawWaiting() {
-      drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to begin audio capture and visualization.");
+      if (state.errorTitle) {
+        drawMessage(canvases.input, state.errorTitle, state.errorBody);
+      } else {
+        drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to begin audio capture and visualization.");
+      }
       drawMessage(canvases.inverse, "Waiting for core data", "The inverse trace will appear here.");
       drawMessage(canvases.overlay, "Phase overlay", "Blue input and orange inverse will be drawn together.");
       drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after the server starts.");
