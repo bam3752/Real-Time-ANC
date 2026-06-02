@@ -240,7 +240,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">Live microphone waveform</div>
-            <div class="panel-note">browser microphone</div>
+            <div class="panel-note">Python audio core</div>
           </div>
           <canvas id="inputCanvas"></canvas>
         </div>
@@ -248,7 +248,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">Electrical inverse waveform</div>
-            <div class="panel-note">negative copy, not played</div>
+            <div class="panel-note">RealtimeANCProcessor output</div>
           </div>
           <canvas id="antiCanvas"></canvas>
         </div>
@@ -284,18 +284,13 @@
     const plotSize = 2048;
     const historySize = 260;
 
-    const live = {
-      context: null,
-      analyser: null,
-      source: null,
-      stream: null,
-      buffer: null,
-      ready: false
-    };
-
     const state = {
       history: new Float32Array(historySize),
-      historyWrite: 0
+      historyWrite: 0,
+      running: false,
+      input: new Float32Array(plotSize),
+      anti: new Float32Array(plotSize),
+      lastFrameAt: 0
     };
 
     const controls = {
@@ -316,63 +311,90 @@
       history: document.getElementById("historyCanvas")
     };
 
-    document.getElementById("micButton").addEventListener("click", startLiveMic);
-    controls.gain.addEventListener("input", updateLabels);
+    const micButton = document.getElementById("micButton");
+
+    micButton.addEventListener("click", toggleAudioCore);
+    controls.gain.addEventListener("input", () => {
+      updateLabels();
+      sendConfig();
+    });
     updateLabels();
+    setInterval(pollFrame, 45);
 
     function updateLabels() {
       labels.gain.textContent = Number(controls.gain.value).toFixed(2);
     }
 
-    async function startLiveMic() {
+    async function toggleAudioCore() {
+      if (state.running) {
+        await stopAudioCore();
+      } else {
+        await startAudioCore();
+      }
+    }
+
+    async function startAudioCore() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
-        stopLiveMic();
-        live.context = new (window.AudioContext || window.webkitAudioContext)();
-        live.stream = stream;
-        live.source = live.context.createMediaStreamSource(stream);
-        live.analyser = live.context.createAnalyser();
-        live.analyser.fftSize = plotSize;
-        live.analyser.smoothingTimeConstant = 0;
-        live.buffer = new Float32Array(live.analyser.fftSize);
-        live.source.connect(live.analyser);
-        live.ready = true;
+        const url = `/api/start?gain=${encodeURIComponent(controls.gain.value)}`;
+        const response = await fetch(url);
+        const payload = await response.json();
+        if (!payload.ok) throw new Error(payload.status || "audio start failed");
+        state.running = true;
         labels.micStatus.textContent = "On";
+        micButton.textContent = "Stop Microphone";
       } catch (error) {
-        labels.micStatus.textContent = "Blocked";
-        labels.input.textContent = "mic blocked";
+        state.running = false;
+        labels.micStatus.textContent = "Error";
+        labels.input.textContent = "server error";
       }
     }
 
-    function stopLiveMic() {
-      if (live.source) {
-        try {
-          live.source.disconnect();
-        } catch (_) {
-        }
+    async function stopAudioCore() {
+      try {
+        await fetch("/api/stop");
+      } finally {
+        state.running = false;
+        labels.micStatus.textContent = "Off";
+        micButton.textContent = "Start Microphone";
       }
-      if (live.stream) {
-        live.stream.getTracks().forEach(track => track.stop());
-      }
-      if (live.context && live.context.state !== "closed") {
-        live.context.close();
-      }
-      live.context = null;
-      live.analyser = null;
-      live.source = null;
-      live.stream = null;
-      live.buffer = null;
-      live.ready = false;
     }
 
-    function db(value) {
-      return 20 * Math.log10(Math.max(value, 1e-9));
+    async function sendConfig() {
+      if (!state.running) return;
+      try {
+        await fetch(`/api/config?gain=${encodeURIComponent(controls.gain.value)}`);
+      } catch (_) {
+      }
+    }
+
+    async function pollFrame() {
+      if (!state.running) return;
+      try {
+        const response = await fetch("/api/frame", { cache: "no-store" });
+        const payload = await response.json();
+        state.running = Boolean(payload.running);
+        labels.micStatus.textContent = state.running ? "On" : "Off";
+        micButton.textContent = state.running ? "Stop Microphone" : "Start Microphone";
+        state.input = padFrame(payload.input || []);
+        state.anti = padFrame(payload.anti || []);
+        state.lastFrameAt = performance.now();
+        const inputDb = Number(payload.metrics.input_dbfs);
+        state.history[state.historyWrite] = inputDb;
+        state.historyWrite = (state.historyWrite + 1) % historySize;
+        labels.input.textContent = `${inputDb.toFixed(1)} dB`;
+      } catch (_) {
+        labels.micStatus.textContent = "Server off";
+      }
+    }
+
+    function padFrame(values) {
+      const out = new Float32Array(plotSize);
+      const start = Math.max(0, values.length - plotSize);
+      const count = Math.min(plotSize, values.length);
+      for (let i = 0; i < count; i++) {
+        out[plotSize - count + i] = Number(values[start + i]) || 0;
+      }
+      return out;
     }
 
     function drawWave(canvas, data, color, scale = 1) {
@@ -541,35 +563,22 @@
     }
 
     function drawWaiting() {
-      drawMessage(canvases.input, "Microphone not started", "Click Start Microphone and allow browser access.");
-      drawMessage(canvases.anti, "Waiting for live input", "The inverse trace will appear here.");
+      drawMessage(canvases.input, "Microphone not started", "Click Start Microphone to start the Python audio core.");
+      drawMessage(canvases.anti, "Waiting for core data", "The inverse trace will appear here.");
       drawMessage(canvases.overlay, "Phase overlay", "Blue input and orange inverse will be drawn together.");
-      drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after permission is granted.");
-      drawMessage(canvases.history, "Live level history", "Input dB history appears after permission is granted.");
+      drawMessage(canvases.spectrum, "Live spectrum", "Microphone spectrum appears after the server starts.");
+      drawMessage(canvases.history, "Live level history", "Input dB history appears after the server starts.");
     }
 
     function render() {
-      if (!live.ready) {
+      if (!state.running || performance.now() - state.lastFrameAt > 1500) {
         drawWaiting();
         requestAnimationFrame(render);
         return;
       }
 
-      live.analyser.getFloatTimeDomainData(live.buffer);
-      const input = live.buffer;
-      const anti = new Float32Array(input.length);
-      const gain = Number(controls.gain.value);
-      let sumInput = 0;
-      for (let i = 0; i < input.length; i++) {
-        anti[i] = -gain * input[i];
-        sumInput += input[i] * input[i];
-      }
-
-      const inputRms = Math.sqrt(sumInput / input.length);
-      state.history[state.historyWrite] = db(inputRms);
-      state.historyWrite = (state.historyWrite + 1) % historySize;
-      labels.input.textContent = `${db(inputRms).toFixed(1)} dB`;
-
+      const input = state.input;
+      const anti = state.anti;
       drawWave(canvases.input, input, "#5aa7e8", 1.6);
       drawWave(canvases.anti, anti, "#e98b3a", 1.8);
       drawOverlay(canvases.overlay, input, anti);
